@@ -27,6 +27,13 @@
   .card b{display:block}
   .card a{color:#f87171;cursor:pointer;font-size:13px}
   .empty{color:#94a3b8}
+  #listBtn{background:#3b82f6;width:100%;margin-top:6px}
+  #facesBox{background:#1e293b;border-radius:12px;padding:12px;margin-top:10px;max-height:380px;overflow:auto}
+  .fcard{display:flex;align-items:center;gap:12px;background:#0f172a;padding:8px;border-radius:8px;margin-bottom:8px}
+  .fcard img{width:56px;height:56px;object-fit:cover;border-radius:8px}
+  .fcard span{flex:1;font-weight:600;word-break:break-word}
+  .fcard button{background:#ef4444;color:#fff;border:0;padding:8px 14px;border-radius:8px;cursor:pointer}
+  .fempty{color:#94a3b8;text-align:center;padding:8px}
 </style>
 </head>
 <body>
@@ -44,6 +51,8 @@
       <input id="name" placeholder="Enter person name">
       <button class="go" id="regBtn">Start Live Register</button>
     </div>
+    <button class="go" id="listBtn">Registered Faces (<span id="count">0</span>)</button>
+    <div id="facesBox" style="display:none"></div>
   </div>
 </div>
 
@@ -83,7 +92,34 @@ async function loadPeople() {
   people = await (await fetch("/api/people")).json();
   const labeled = people.map(p => new faceapi.LabeledFaceDescriptors(p.name, [new Float32Array(p.descriptor)]));
   matcher = labeled.length ? new faceapi.FaceMatcher(labeled, 0.5) : null;
+  document.getElementById("count").textContent = people.length;
+  renderFaces();
 }
+
+function renderFaces() {
+  const box = document.getElementById("facesBox");
+  if (box.style.display === "none") return;
+  box.innerHTML = people.length ? "" : '<div class="fempty">No one registered yet.</div>';
+  people.forEach(p => {
+    const row = document.createElement("div"); row.className = "fcard";
+    row.innerHTML = '<img><span></span><button>Delete</button>';
+    row.querySelector("img").src = "/photos/" + p.photo + "?t=" + Date.now();
+    row.querySelector("span").textContent = p.name;
+    row.querySelector("button").onclick = async () => {
+      if (!confirm("Delete " + p.name + "? This removes their saved photo and face data.")) return;
+      const res = await fetch("/api/people/" + encodeURIComponent(p.name), { method: "DELETE" });
+      msg.textContent = res.ok ? p.name + " deleted." : "Delete failed.";
+      loadPeople();
+    };
+    box.appendChild(row);
+  });
+}
+
+document.getElementById("listBtn").onclick = () => {
+  const box = document.getElementById("facesBox");
+  box.style.display = box.style.display === "none" ? "block" : "none";
+  renderFaces();
+};
 
 function trackFor(box) {
   const cx = box.x + box.width / 2, cy = box.y + box.height / 2;

@@ -63,6 +63,8 @@ const dd = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const eye = p => (dd(p[1], p[5]) + dd(p[2], p[4])) / (2 * dd(p[0], p[3]));
 const ear = lm => { const p = lm.positions; return (eye(p.slice(36, 42)) + eye(p.slice(42, 48))) / 2; };
 
+const yaw = lm => { const p = lm.positions; return (p[30].x - p[0].x) / (p[16].x - p[0].x); };
+
 async function init() {
   await Promise.all([
     faceapi.nets.tinyFaceDetector.loadFromUri(MODELS),
@@ -100,10 +102,15 @@ function drawLabel(ctx, b, text, color) {
 
 // adaptive: eye is "closed" when openness drops well below this person's usual open value
 function isClosed(st, e) {
-  st.base = Math.max(e, (st.base || e) * 0.998);
-  const r = e / st.base;
-  if (r < 0.88) st.isC = true;          // eyes closing
-  else if (r > 0.94) st.isC = false;    // eyes open again
+  const t = performance.now();
+  const h = st.hist || (st.hist = []);
+  h.push(e); if (h.length > 30) h.shift();
+  const sorted = [...h].sort((a, b) => a - b);
+  const base = sorted[Math.floor(sorted.length * 0.75)];   // typical open-eye value, ignores spikes
+  const r = e / base;
+  if (r < 0.86) { if (!st.isC) { st.isC = true; st.cAt = t; } }
+  else if (r > 0.93) st.isC = false;
+  if (st.isC && t - st.cAt > 1000) { st.isC = false; st.hist = [e]; }   // stuck: recalibrate
   return !!st.isC;
 }
 
@@ -132,11 +139,15 @@ async function loop() {
           else if (!closed) t.label = "Unknown";
         }
         if (closed) t.closed = true;
-        else if (t.closed) { t.closed = false; t.verifiedAt = now; }   // blink finished = live person
+        else if (t.closed) { t.closed = false; if (now - t.cAt < 800) t.verifiedAt = now; }   // blink finished = live person
+        const y = yaw(r.landmarks);
+        if (!t.yT || now - t.yT > 2500) { t.yT = now; t.yMin = t.yMax = y; }
+        t.yMin = Math.min(t.yMin, y); t.yMax = Math.max(t.yMax, y);
+        if (t.yMax - t.yMin > 0.2) { t.verifiedAt = now; t.yT = 0; }   // head moved = live
         const live = now - t.verifiedAt < VERIFY_MS;
         if (t.label === "Unknown") drawLabel(ctx, r.detection.box, "Unknown", "#ef4444");
         else if (live) drawLabel(ctx, r.detection.box, "✔ " + t.label, "#22c55e");
-        else drawLabel(ctx, r.detection.box, t.label + " - blink to verify", "#f59e0b");
+        else drawLabel(ctx, r.detection.box, t.label + " - blink or turn head", "#f59e0b");
       }
     }
   } catch (err) { console.error(err); }
@@ -146,16 +157,19 @@ async function loop() {
 async function registerStep(results) {
   const now = performance.now();
   if (results.length !== 1) {
-    if (now - reg.lastFace > 1000) reg.blinks = 0;
+    if (now - reg.lastFace > 1000) { reg.lo = false; reg.hi = false; }
     msg.textContent = results.length ? "Only one face please." : "No face found. Look at the camera.";
     return;
   }
   reg.lastFace = now;
-  const e = ear(results[0].landmarks), closed = isClosed(reg, e);
-  if (closed) reg.closed = true;
-  else if (reg.closed) { reg.closed = false; reg.blinks++; }
-  msg.textContent = `Blink ${BLINKS_NEEDED} times: ${Math.min(reg.blinks, BLINKS_NEEDED)}/${BLINKS_NEEDED}  (eyes ${e.toFixed(2)}, blink = quick close and open)`;
-  if (reg.blinks < BLINKS_NEEDED || closed) return;
+  const y = yaw(results[0].landmarks);
+  if (y < 0.40) reg.lo = true;
+  if (y > 0.60) reg.hi = true;
+  if (!(reg.lo && reg.hi)) {
+    msg.textContent = `Live check: slowly turn your head to one side, then the other.  Side 1 ${reg.lo ? "✔" : "○"}   Side 2 ${reg.hi ? "✔" : "○"}   (yaw ${y.toFixed(2)})`;
+    return;
+  }
+  if (Math.abs(y - 0.5) > 0.07) { msg.textContent = "Good! Now look straight at the camera."; return; }
 
   reg.active = false;
   msg.textContent = "Capturing...";
@@ -182,8 +196,8 @@ async function registerStep(results) {
 document.getElementById("regBtn").onclick = () => {
   const name = document.getElementById("name").value.trim();
   if (!name) return (msg.textContent = "Please enter a name.");
-  reg = { active: true, name, blinks: 0, closed: false, base: 0, lastFace: performance.now() };
-  msg.textContent = `Look at the camera and blink ${BLINKS_NEEDED} times.`;
+  reg = { active: true, name, lo: false, hi: false, lastFace: performance.now() };
+  msg.textContent = "Look at the camera, then slowly turn your head to each side.";
 };
 
 function setMode(m) {
@@ -191,7 +205,7 @@ function setMode(m) {
   document.getElementById("tReg").classList.toggle("active", m === "register");
   document.getElementById("tDet").classList.toggle("active", m === "detect");
   document.getElementById("regPanel").style.display = m === "register" ? "flex" : "none";
-  msg.textContent = m === "detect" ? "Look at the camera and blink once to verify you are live." : "Enter a name and press Start Live Register.";
+  msg.textContent = m === "detect" ? "Look at the camera, then blink or slowly turn your head to verify you are live." : "Enter a name and press Start Live Register.";
   loadPeople();
 }
 document.getElementById("tReg").onclick = () => setMode("register");
